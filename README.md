@@ -115,3 +115,10 @@ The tests cover numeric precision, aliases, world validation, optional rotation,
 ### Editor conveniences
 
 New workspaces start with one empty default project. Existing projects are preserved. Each project has an autosaved scratchpad, included in JSON backups but excluded from command exports. Paste command text in the visible import bar and press Enter to import; Shift+Enter adds a line. Explosion power/damage and radius support both typed values and sliders (typed values can exceed the initial slider range). Edit the live command text to synchronize supported commands back to the form and position chart; save to update the sequence. The chart includes a schematic explosion radius.
+
+### Scaled map
+The coordinate grid uses equal X/Z scale and an adjustable fixed spacing. Radius changes do not auto-fit the viewport. The supplied Ronograd image has an approximate placement derived from the screenshots: E 450–4830 m, N 100–4600 m. These are reference estimates, not verified game bounds. Large map squares use approximately 1 km (the supplied 3,280 ft annotation), with 10 subdivisions. Terrain projection requires RGE units per square, origin X/Z, and Z direction. X is assumed eastward; radius uses the same units as coordinates and remains the second argument per the user convention. Validate against landmarks before relying on terrain placement. This is horizontal radius geometry, not a damage/occlusion simulation. Calibration is project-specific and included in JSON backups. Run `node tests/map-check.cjs` for map geometry checks.
+
+The two user-provided teleport references now define the default approximate similarity transform: airport X=-3472.39990234375 Z=1152.5999755859375 and southern city X=3460.60009765625 Z=1147.199951171875. Both use approximate image area centres; positive Z south is assumed. Default scale is about 3,277 RGE units/km. Manual alignment overrides this estimate. This is not a verified georeference.
+
+Reference markers and the reference-command panel are hidden from the editor. The underlying approximate map calibration is retained.

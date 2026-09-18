@@ -122,6 +122,7 @@ function renderProjects() {
   $('projects').innerHTML = state.projects.map(p => `<button class="project-button ${p.id===state.activeProject?'active':''}" data-project="${escapeHTML(p.id)}">${escapeHTML(p.name)}</button>`).join('');
   $('project-title').textContent = project().name;
   $('scratchpad').value = project().scratchpad || '';
+  for(const k of ['units','ox','oz','direction'])$('map-'+k).value=project().mapSettings?.[k] ?? (k==='direction'?'south':'');
   $('project-stats').textContent = t('{count} saved commands',{count:project().entries.length});
   $('library-count').textContent = state.projects.reduce((n,p) => n+p.entries.length,0);
 }
@@ -145,25 +146,79 @@ async function saveCommand(asCopy = false) {
   currentId = next.id; loadDraft(next); snapshotDraft(); renderSequence(); drawMap();
   toast(previous ? t('Command updated. Previous version kept in history.') : t('Command saved to your project.'));
 }
-function drawMap() {
-  const values = draftValues();
-  const coords = v => v && ['x','y','z'].every(k => v[k] !== '' && v[k] !== undefined && Number.isFinite(Number(v[k]))) ? {x:Number(v.x),z:Number(v.z)} : null;
-  const points = project().entries.map(e => ({...coords(e.values),id:e.id})).filter(p => Number.isFinite(p.x));
-  const current = valid ? coords(values) : null;
-  const all = current ? [...points, current] : points;
-  const radius = current && $('command-kind').value === 'explosion' ? Math.abs(Number(values.value2)) : 0;
-  if (radius && Number.isFinite(radius)) all.push({x:current.x-radius,z:current.z-radius},{x:current.x+radius,z:current.z+radius});
-  if (!all.length) { $('map-points').innerHTML = '<text x="160" y="107">' + t('No position in this command') + '</text>'; $('position-readout').textContent = t('Position preview appears for commands with X / Y / Z.'); return; }
-  const xs = all.map(p=>p.x), zs=all.map(p=>p.z), minX=Math.min(...xs), maxX=Math.max(...xs), minZ=Math.min(...zs), maxZ=Math.max(...zs);
-  const scale = Math.min(400/Math.max(maxX-minX,20),130/Math.max(maxZ-minZ,20));
-  const xy = p => [250+(p.x-(minX+maxX)/2)*scale,105+(p.z-(minZ+maxZ)/2)*scale];
-  let html = points.map(p=>{const [x,y]=xy(p); return `<circle cx="${x}" cy="${y}" r="4" fill="#71817a"/>`;}).join('');
-  if(current && radius){const [x,y]=xy(current);html += `<circle data-explosion-radius="${radius}" cx="${x}" cy="${y}" r="${radius*scale}" fill="#d6fa76" fill-opacity=".08" stroke="#d6fa76" stroke-dasharray="4 4"/>`;}
-  if(current){const [x,y]=xy(current);html += `<circle cx="${x}" cy="${y}" r="13" fill="none" stroke="#d6fa76" opacity=".35"/><circle cx="${x}" cy="${y}" r="5" fill="#d6fa76"/><path d="M ${x} ${y-20} v-7 M ${x} ${y+20} v7 M ${x-20} ${y} h-7 M ${x+20} ${y} h7" stroke="#d6fa76"/>`;}
-  html += '<text x="468" y="195">X →</text><text x="12" y="22">Z ↓</text>';
-  $('map-points').innerHTML = html;
-  $('position-readout').textContent = current ? `X ${values.x}  /  Y ${values.y}  /  Z ${values.z}` : t('{count} saved positions',{count:points.length});
+// The user located this command inside the red airport box. Image position is
+// the approximate centre of that area, not a surveyed point on the ground.
+const AIRPORT_REFERENCE = Object.freeze({
+  x:-3472.39990234375, y:61.187740325927734, z:1152.5999755859375,
+  east:1435.5, north:2134,
+});
+const CITY_REFERENCE = Object.freeze({
+  x:3460.60009765625, y:177.044189453125, z:1147.199951171875,
+  east:3551.04, north:2134,
+});
+// Fit both area centres with a uniform scale and rotation. The southward Z
+// orientation remains an assumption; two nearly east-west areas cannot verify it.
+function referenceTransform() {
+  const dx=CITY_REFERENCE.x-AIRPORT_REFERENCE.x,dz=CITY_REFERENCE.z-AIRPORT_REFERENCE.z;
+  const de=CITY_REFERENCE.east-AIRPORT_REFERENCE.east,dy=AIRPORT_REFERENCE.north-CITY_REFERENCE.north;
+  const denominator=dx*dx+dz*dz;
+  const a=(de*dx+dy*dz)/denominator,b=(dy*dx-de*dz)/denominator;
+  return {a,b,scale:Math.hypot(a,b),point:v=>({x:AIRPORT_REFERENCE.east+a*(v.x-AIRPORT_REFERENCE.x)-b*(v.z-AIRPORT_REFERENCE.z),y:5000-AIRPORT_REFERENCE.north+b*(v.x-AIRPORT_REFERENCE.x)+a*(v.z-AIRPORT_REFERENCE.z)})};
 }
+function drawMap() {
+  if(!$('map-mode'))return;
+  const values=draftValues(), settings=project().mapSettings||{};
+  const terrain=$('map-mode').value==='terrain';
+  $('map-grid').disabled=terrain;
+  const unit=Math.max(1,Math.min(1000000,Number($('map-grid').value)||100));
+  const zoom=Number($('map-zoom').value)||1;
+  const fit=referenceTransform();
+  const estimated=!Object.values(settings).some(v=>String(v).trim()!=='');
+  const units=estimated?1000/fit.scale:Number(settings.units), ox=Number(settings.ox), oz=Number(settings.oz);
+  const calibrated=['units','ox','oz'].every(k=>settings[k]!==undefined&&String(settings[k]).trim()!==''&&Number.isFinite(Number(settings[k])))&&units>0;
+  const sign=settings.direction==='north'?1:-1;
+  const coords=v=>v&&['x','z'].every(k=>v[k]!==undefined&&String(v[k]).trim()!==''&&Number.isFinite(Number(v[k])))?{x:Number(v.x),z:Number(v.z)}:null;
+  const current=valid?coords(values):null;
+  const toMap=v=>terrain?(estimated?fit.point(v):{x:(v.x-ox)/units*1000,y:5000-sign*(v.z-oz)/units*1000}):{x:v.x,y:v.z};
+  const c=current&&(!terrain||calibrated||estimated)?toMap(current):null;
+  const width=(terrain?6000:unit*10)/zoom,height=width*5/6;
+  const cx=terrain?(zoom>1&&c?c.x:3000):(current?.x||0),cy=terrain?(zoom>1&&c?c.y:2500):(current?.z||0);
+  const left=cx-width/2,top=cy-height/2,step=terrain?1000:unit;
+  const svg=$('position-map');svg.setAttribute('viewBox',`${left} ${top} ${width} ${height}`);
+  let html=`<rect x="${left}" y="${top}" width="${width}" height="${height}" fill="#10232e"/>`;
+  if(terrain)html+='<image href="/assets/ronograd.png" x="450" y="400" width="4380" height="4500" preserveAspectRatio="none"/>';
+  const line=(x1,y1,x2,y2,major)=>`<path d="M ${x1} ${y1} L ${x2} ${y2}" stroke="${major?'#bdd2d3':'#72888b'}" stroke-opacity="${major?'.55':'.2'}" stroke-width="${width*(major?.0012:.0006)}"/>`;
+  const sub=step/10;
+  for(let i=Math.ceil(left/sub);i*sub<=left+width;i++)html+=line(i*sub,top,i*sub,top+height,i%10===0);
+  for(let i=Math.ceil(top/sub);i*sub<=top+height;i++)html+=line(left,i*sub,left+width,i*sub,i%10===0);
+  const label=(x,y,text)=>`<text x="${x}" y="${y}" fill="#efc478" font-size="${width*.023}" paint-order="stroke" stroke="#10232e" stroke-width="${width*.004}">${text}</text>`;
+  for(let i=Math.ceil(left/step);i*step<=left+width;i++)html+=label(i*step+width*.006,top+height*.045,terrain?String(i).padStart(2,'0'):String(i*step));
+  for(let i=Math.ceil(top/step);i*step<=top+height;i++)html+=label(left+width*.008,Math.max(top+height*.08,i*step-height*.009),terrain?String(5-i).padStart(2,'0'):String(i*step));
+  if(!terrain||calibrated||estimated){
+    // Terrain commands may belong to different worlds; only the current command is projected.
+    if(c){
+      const radius=$('command-kind').value==='explosion'?Math.abs(Number(values.value2))*(terrain?1000/units:1):0;
+      if(Number.isFinite(radius)&&radius>0)html+=`<circle data-explosion-radius="${radius}" cx="${c.x}" cy="${c.y}" r="${radius}" fill="#d6fa76" fill-opacity=".18" stroke="#d6fa76" stroke-width="${width*.002}"/>`;
+      html+=`<circle cx="${c.x}" cy="${c.y}" r="${width*.006}" fill="#d6fa76"/><path d="M ${c.x-width*.018} ${c.y} h${width*.036} M ${c.x} ${c.y-width*.018} v${width*.036}" stroke="#fff" stroke-width="${width*.0015}"/>`;
+    }
+  }
+  svg.innerHTML=html;
+  $('position-readout').textContent=terrain?(estimated?t('Two-reference estimate · southward Z assumed')+` · 1 km ≈ ${units.toFixed(1)} ${t('RGE units')}`:calibrated?t('Map alignment applied · verify against a landmark'):t('Complete all alignment fields or clear them to use the two-reference estimate.')):(current?`X ${values.x} / Y ${values.y} / Z ${values.z} · ${t('Grid spacing')}: ${unit} ${t('RGE units')}`:t('No position in this command'));
+  $('map-scale').textContent=terrain?t('Large square: 3,280 ft ≈ 1 km · 10 subdivisions ≈ 100 m each'):t('Radius and coordinates use the same RGE units. Grid scale stays fixed as radius changes.');
+}
+function setupMap() {
+  const panel=document.querySelector('.spatial-panel');
+  panel.querySelector('.map-legend').remove();
+  const text=(key)=>`<span data-i18n="${key}">${key}</span>`;
+  const field=(key,label,value='')=>`<label>${text(label)}<input id="map-${key}" inputmode="decimal" value="${value}" autocomplete="off"></label>`;
+  $('position-map').insertAdjacentHTML('beforebegin',`<div class="map-controls"><label>${text('Map view')}<select id="map-mode"><option value="coordinates" data-i18n="RGE coordinate grid">RGE coordinate grid</option><option value="terrain" data-i18n="Ronograd reference map">Ronograd reference map</option></select></label><label>${text('Grid spacing')}<input id="map-grid" type="number" min="1" max="1000000" value="100"></label><label>${text('Zoom')}<select id="map-zoom"><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option></select></label></div>`);
+  panel.insertAdjacentHTML('beforeend',`<p id="map-scale" class="map-help"></p><details class="map-alignment"><summary>${text('Align RGE coordinates with the map')}</summary><p>${text('The image grid provides distance, not the RGE origin. Reference image alignment is approximate. Supply measured values below; X increases east.')}</p><div class="map-controls">${field('units','RGE units per large square')}${field('ox','RGE X at grid 00')}${field('oz','RGE Z at grid 00')}<label>${text('Increasing Z points')}<select id="map-direction"><option value="south" data-i18n="South">South</option><option value="north" data-i18n="North">North</option></select></label></div><p>${text('Radius is treated as RGE coordinate units, using your second explosion argument. Circles show horizontal extent, not terrain occlusion or damage falloff.')}</p></details>`);
+  $('map-mode').value='terrain';
+  $('map-zoom').insertAdjacentHTML('beforeend','<option value="8">8×</option><option value="16">16×</option>');
+  for(const key of ['mode','grid','zoom'])$('map-'+key).oninput=drawMap;
+  for(const key of ['units','ox','oz','direction'])$('map-'+key).oninput=()=>{project().mapSettings=Object.fromEntries(['units','ox','oz','direction'].map(k=>[k,$('map-'+k).value]));persist();drawMap();};
+}
+
 function renderLibrary() {
   const query = $('search').value.toLowerCase(), kind = $('filter-kind').value;
   const all = state.projects.flatMap(p=>p.entries.map(e=>({...e,projectId:p.id,projectName:p.name})));
@@ -220,7 +275,7 @@ async function importFile(file) {
         const i=p.entries.findIndex(e=>e.id===p.draft.id);
         draft={id:i>=0?entries[i].id:null,kind:p.draft.kind,values,title:String(p.draft.title||'').slice(0,160),notes:String(p.draft.notes||'').slice(0,4000)};
       }
-      imported.push({id:uid(),name:p.name.slice(0,160),entries,draft,scratchpad:String(p.scratchpad||'').slice(0,20000)});
+      imported.push({id:uid(),name:p.name.slice(0,160),entries,draft,scratchpad:String(p.scratchpad||'').slice(0,20000),mapSettings:p.mapSettings&&typeof p.mapSettings==='object'?Object.fromEntries(['units','ox','oz','direction'].map(k=>[k,String(p.mapSettings[k]??'').slice(0,40)])):{}});
     }
     snapshotDraft(); state.projects.push(...imported); state.activeProject=imported[0].id; loadDraft(imported[0].draft||imported[0].entries[0]||null); snapshotDraft(); renderProjects(); showView('builder'); toast(t('Restored {count} projects. Existing projects kept.',{count:imported.length}));
   } else if (/\.txt$/i.test(file.name)) await importText(await file.text());
@@ -360,7 +415,7 @@ async function init() {
   try {
     translations=await (await fetch('/assets/zh-CN.json')).json();
     schemas=await api('/api/schema');
-    translateInterface();prepareEditorUI();translateInterface();
+    translateInterface();prepareEditorUI();setupMap();translateInterface();
     const saved=localStorage.getItem(KEY);
     if(saved){state=JSON.parse(saved);if(state.version!==1||!Array.isArray(state.projects)||!state.projects.length||!state.projects.some(p=>p.id===state.activeProject))throw new Error(t('Saved workspace cannot be read. Your browser data has not been overwritten.'));}
     else {
