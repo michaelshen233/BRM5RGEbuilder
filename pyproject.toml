@@ -1,0 +1,9 @@
+[project]
+name = "brm5-rge-studio"
+version = "1.0.0"
+description = "Visual command authoring for BRM5 RGE"
+requires-python = ">=3.12"
+dependencies = ["Flask==3.1.2", "openpyxl==3.1.5", "defusedxml==0.7.1"]
+
+[tool.vercel]
+entrypoint = "app:app"

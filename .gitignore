@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.vercel/
+.env*
+!.env.example
+examples/workbook-library.json
